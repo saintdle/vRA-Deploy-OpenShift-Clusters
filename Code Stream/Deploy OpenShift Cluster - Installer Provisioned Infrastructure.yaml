@@ -1,0 +1,370 @@
+---
+project: <Change Me!>
+kind: PIPELINE
+name: Deploy OpenShift Cluster - Installer Provisioned Infrastructure
+icon: organization,left, is-warning
+enabled: true
+concurrency: 10
+input:
+  Add_to_Cloud_Assembly: 'Yes'
+  Add_to_Code_Stream: 'Yes'
+  Add_to_TMC: 'Yes'
+  base_domain: veducate.local
+  Cluster_Name: ocp-vra
+  Compute_Plane_Node_count: '1'
+  Control_Plane_Node_count: '3'
+  Openshift_apiVIP: 192.168.200.140
+  Openshift_ingressVIP: 192.168.200.141
+  Project: veducate-project
+  vCenter: vcenter.veducate.local
+  vCenter_cluster: Cluster
+  vCenter_datacenter: Datacenter
+  vCenter_datastore: Datastore
+  vCenter_network: VM_NW1
+_inputMeta:
+  vCenter_network:
+    description: Network for the OpenShift nodes to be deployed to
+    mandatory: true
+  Add_to_TMC:
+    description: Add Cluster to Tanzu Mission Control = Yes or No
+    mandatory: true
+  Add_to_Cloud_Assembly:
+    description: Add Cluster to Cloud Assembly as K8s endpoint = Yes or No
+    mandatory: true
+  Openshift_apiVIP:
+    description: IP address to be used by in-cluster load balancing for central services
+    mandatory: true
+  Compute_Plane_Node_count:
+    description: Set number of Control Plane nodes to be deployed
+    mandatory: true
+  base_domain:
+    description: Base domain for infrastructure you are deploying to
+    mandatory: true
+  Openshift_ingressVIP:
+    description: IP address to be used by the in-cluster ingress services
+    mandatory: true
+  Project:
+    description: Provide vRA Project name for k8s endpoints to be attached
+    mandatory: true
+  vCenter_cluster:
+    description: vCenter Cluster you are deploying to
+    mandatory: true
+  Control_Plane_Node_count:
+    description: Set number of Control Plane nodes to be deployed
+    mandatory: true
+  vCenter_datastore:
+    description: Datastore for the OpenShift Nodes to be deployed to
+    mandatory: true
+  Add_to_Code_Stream:
+    description: Add Cluster to Code Stream as K8s endpoint = Yes or No
+    mandatory: true
+  vCenter_datacenter:
+    description: vCenter Datacenter object you are deploying to
+    mandatory: true
+  vCenter:
+    description: Which vCenter to deploy the cluster to
+    mandatory: true
+  Cluster_Name:
+    description: Provide a name for the Openshift Cluster
+    mandatory: true
+workspace:
+  type: DOCKER
+  endpoint: veducate-docker-host
+  image: saintdle/openshift-ci:latest
+  registry: ''
+  path: /workingDir
+  autoCloneForTrigger: false
+  limits:
+    cpu: 1.0
+    memory: 512
+stageOrder:
+- Build OpenShift Cluster
+- Add OCP Cluster to vRA
+- Add OCP to TMC
+stages:
+  Build OpenShift Cluster:
+    taskOrder:
+    - Get vCenter certs
+    - Create Install-Config file
+    - Create OpenShift Cluster
+    tasks:
+      Create OpenShift Cluster:
+        type: CI
+        input:
+          steps:
+          - openshift-install create cluster --log-level=DEBUG
+          export: [
+            ]
+          artifacts:
+          - .openshift_install.log
+          - auth/kubeadmin-password
+          - auth/kubeconfig
+          process: [
+            ]
+      Get vCenter certs:
+        type: CI
+        input:
+          steps:
+          - curl -O https://${input.vCenter}/certs/download.zip
+          - unzip download.zip
+          - cp certs/win/* /etc/pki/ca-trust/source/anchors
+          - update-ca-trust extract
+          export: [
+            ]
+          artifacts: [
+            ]
+          process: [
+            ]
+      Create Install-Config file:
+        type: CI
+        input:
+          steps:
+          - cd /workingDir/
+          - ''
+          - export pullSecret=$(echo ${var.pullSecret} | base64 -d)
+          - ''
+          - cat << EOF > install-config.yaml
+          - 'apiVersion: v1'
+          - 'baseDomain: ${input.base_domain}'
+          - 'compute: '
+          - '- hyperthreading: Enabled '
+          - '  name: worker'
+          - '  replicas: ${input.Compute_Plane_Node_count}'
+          - '  platform:'
+          - '    vsphere: '
+          - '      cpus: 8'
+          - '      coresPerSocket: 2'
+          - '      memoryMB: 8192'
+          - '      osDisk:'
+          - '        diskSizeGB: 120'
+          - 'controlPlane: '
+          - '  hyperthreading: Enabled '
+          - '  name: master'
+          - '  replicas: ${input.Control_Plane_Node_count}'
+          - '  platform:'
+          - '    vsphere: '
+          - '      cpus: 8'
+          - '      coresPerSocket: 2'
+          - '      memoryMB: 16384'
+          - '      osDisk:'
+          - '        diskSizeGB: 120'
+          - 'metadata:'
+          - '  name: ${input.Cluster_Name}'
+          - 'platform:'
+          - '  vsphere:'
+          - '    vcenter: ${input.vCenter}'
+          - '    username: ${var.vCenter_User}'
+          - '    password: ${var.vCenter_Pass}'
+          - '    datacenter: ${input.vCenter_datacenter}'
+          - '    defaultDatastore: ${input.vCenter_datastore}'
+          - '    network: ${input.vCenter_network}'
+          - '    cluster: ${input.vCenter_cluster}'
+          - '    apiVIP: ${input.Openshift_apiVIP}'
+          - '    ingressVIP: ${input.Openshift_ingressVIP}'
+          - 'pullSecret: ''$pullSecret'''
+          - 'sshKey: ''${var.sshKey}'''
+          - EOF
+          export: [
+            ]
+          artifacts:
+          - install-config.yaml
+          process: [
+            ]
+  Add OCP to TMC:
+    taskOrder:
+    - Get TMC API Token
+    - Create TMC cluster attach task
+    - Install TMC to Cluster
+    tasks:
+      Create TMC cluster attach task:
+        type: REST
+        preCondition: ${input.Add_to_TMC} == "Yes"
+        input:
+          action: post
+          url: https://${var.ocp-tmc-url}/v1alpha1/clusters
+          headers:
+            Accept: application/json
+            Content-Type: application/json
+            Authorization: Bearer ${Add OCP to TMC.Get TMC API Token.output.responseBody.access_token}
+          payload: '{"cluster":{"fullName":{"managementClusterName":"attached","provisionerName":"attached","name":"${input.Cluster_Name}"},"meta":{},"spec":{"clusterGroupName":"default"}}}'
+      Install TMC to Cluster:
+        type: CI
+        preCondition: ${input.Add_to_TMC} == "Yes"
+        input:
+          steps:
+          - ''
+          - kubectl create -f "${Add OCP to TMC.Create TMC cluster attach task.output.responseBody.cluster.status.installerLink}"
+          - ''
+          - currentstatus=$(curl --location --request GET 'https://${var.ocp-tmc-url}/v1alpha1/clusters/${input.Cluster_Name}?full_name.managementClusterName=attached&full_name.provisionerName=attached'
+            \
+          - '--header ''Authorization: Bearer ${Add OCP to TMC.Get TMC API Token.output.responseBody.access_token}''
+            | jq ''.cluster.status.health'' | sed ''s/"//g'' )'
+          - statusdone=HEALTHY
+          - while [ $currentstatus != $statusdone ]
+          - do
+          - '  echo "Waiting for Cluster to Synchronise with TMC"'
+          - '  sleep 15'
+          - '  currentstatus=$(curl --location --request GET ''https://${var.ocp-tmc-url}/v1alpha1/clusters/${input.Cluster_Name}?full_name.managementClusterName=attached&full_name.provisionerName=attached''
+            \'
+          - '--header ''Authorization: Bearer ${Add OCP to TMC.Get TMC API Token.output.responseBody.access_token}''
+            | jq ''.cluster.status.health'' | sed ''s/"//g'' )'
+          - done
+          export: [
+            ]
+          artifacts: [
+            ]
+          process: [
+            ]
+      Get TMC API Token:
+        type: REST
+        preCondition: ${input.Add_to_TMC} == "Yes"
+        input:
+          action: post
+          url: https://console.cloud.vmware.com/csp/gateway/am/api/auth/api-tokens/authorize?refresh_token=${var.ocp-tmc-token}
+          headers:
+            Accept: application/json
+            Content-Type: application/json
+          payload: ''
+  Add OCP Cluster to vRA:
+    taskOrder:
+    - Create Cluster Service Account
+    - Get OCP Cluster details,Get vRA Cloud API Token,Create Role Binding
+    - Create Code Stream Endpoint,Create Cloud Assembly K8s Endpoint
+    tasks:
+      Create Cloud Assembly K8s Endpoint:
+        type: REST
+        preCondition: ${input.Add_to_Cloud_Assembly} == "Yes"
+        input:
+          action: post
+          url: https://api.mgmt.cloud.vmware.com/cmx/api/resources/k8s/clusters/
+          headers:
+            Accept: application/json
+            Content-Type: application/json
+            Authorization: Bearer ${Add OCP Cluster to vRA.Get vRA Cloud API Token.output.responseBody.access_token}
+          payload: |-
+            {
+              "name": "${input.Cluster_Name}",
+              "description": "Cluster created from Pipeline",
+              "address": "${Add OCP Cluster to vRA.Get OCP Cluster details.output.exports.APISERVERNOPORT}",
+              "credentials": {
+                "privateKey": "${Add OCP Cluster to vRA.Get OCP Cluster details.output.exports.TOKEN}",
+                "type": "Bearer"
+              },
+              "clusterType": "EXTERNAL",
+              "caCertificate": "${Add OCP Cluster to vRA.Get OCP Cluster details.output.exports.clusterCACertificate}",
+              "shared": "true",
+              "global": "true"
+            }
+      Create Role Binding:
+        type: CI
+        preCondition: ${input.Add_to_Code_Stream} == "Yes" || ${input.Add_to_Cloud_Assembly} == "Yes"
+        input:
+          steps:
+          - tee svc-rbac.yaml > /dev/null << EOF
+          - 'apiVersion: rbac.authorization.k8s.io/v1'
+          - 'kind: ClusterRoleBinding'
+          - 'metadata:'
+          - '  name: vra-admin'
+          - 'roleRef:'
+          - '  apiGroup: rbac.authorization.k8s.io'
+          - '  kind: ClusterRole'
+          - '  name: cluster-admin'
+          - 'subjects:'
+          - '  - kind: ServiceAccount'
+          - '    name: vra-admin'
+          - '    namespace: kube-system'
+          - EOF
+          - ''
+          - kubectl apply -f svc-rbac.yaml
+          export: [
+            ]
+          artifacts: [
+            ]
+          process: [
+            ]
+      Create Code Stream Endpoint:
+        type: REST
+        preCondition: ${input.Add_to_Code_Stream} == "Yes"
+        input:
+          action: post
+          url: https://api.mgmt.cloud.vmware.com/pipeline/api/endpoints
+          headers:
+            Accept: application/json
+            Content-Type: application/json
+            Authorization: Bearer ${Add OCP Cluster to vRA.Get vRA Cloud API Token.output.responseBody.access_token}
+          payload: |-
+            {
+              "project": "${input.Project}",
+              "kind": "ENDPOINT",
+              "name": "${input.Cluster_Name}",
+              "description": "Cluster Created From Pipeline",
+              "tags": [],
+              "type": "k8s",
+              "isRestricted": "false",
+              "cloudProxyId": "6bbc1cbb-b091-4c14-852b-a32ba5169150",
+              "properties": {
+                "kubernetesURL": "${Add OCP Cluster to vRA.Get OCP Cluster details.output.exports.APISERVER}",
+                "authType": "token",
+                "token": "${Add OCP Cluster to vRA.Get OCP Cluster details.output.exports.TOKEN}",
+                "fingerprint": "${Add OCP Cluster to vRA.Get OCP Cluster details.output.exports.FINGERPRINT}"
+              }
+            }
+      Get vRA Cloud API Token:
+        type: REST
+        preCondition: ${input.Add_to_Code_Stream} == "Yes" || ${input.Add_to_Cloud_Assembly} == "Yes"
+        input:
+          action: post
+          url: https://console.cloud.vmware.com/csp/gateway/am/api/auth/api-tokens/authorize?refresh_token=${var.ocp-vra-token}
+          headers:
+            Accept: application/json
+            Content-Type: application/json
+          payload: ''
+      Create Cluster Service Account:
+        type: CI
+        preCondition: ${input.Add_to_Code_Stream} == "Yes" || ${input.Add_to_Cloud_Assembly} == "Yes"
+        input:
+          steps:
+          - tee cluster_sa.yaml > /dev/null << EOF
+          - 'apiVersion: v1'
+          - 'kind: ServiceAccount'
+          - 'metadata:'
+          - '  name: vra-admin'
+          - '  namespace: kube-system'
+          - EOF
+          - ''
+          - kubectl apply -f cluster_sa.yaml --kubeconfig=auth/kubeconfig
+          export: [
+            ]
+          artifacts: [
+            ]
+          process: [
+            ]
+      Get OCP Cluster details:
+        type: CI
+        preCondition: ${input.Add_to_Code_Stream} == "Yes" || ${input.Add_to_Cloud_Assembly} == "Yes"
+        input:
+          steps:
+          - export APISERVER=$(kubectl config view --minify --kubeconfig=auth/kubeconfig | grep server
+            | cut -f 2- -d ":" | tr -d " ")
+          - APISERVERNOHTTPS=$(echo $APISERVER | cut -c 9-)
+          - ''
+          - FPRINT=$(openssl s_client -connect $APISERVERNOHTTPS < /dev/null 2>/dev/null | openssl x509
+            -fingerprint -sha256 -noout -in /dev/stdin)
+          - export FINGERPRINT=$(echo $FPRINT | cut -c 20-)
+          - TOKENNAME=$(kubectl -n kube-system get serviceaccount/vra-admin -o jsonpath='{.secrets[0].name}'
+            --kubeconfig=auth/kubeconfig)
+          - export TOKEN=$(kubectl -n kube-system get secret $TOKENNAME -o jsonpath='{.data.token}' --kubeconfig=auth/kubeconfig
+            | base64 -d)
+          - export clusterCACertificate=$(kubectl config view --minify --raw -o json --kubeconfig=auth/kubeconfig
+            | jq '.clusters[0].cluster["certificate-authority-data"]' | sed 's/"//g' )
+          - export APISERVERNOPORT=$(echo $APISERVER | sed 's/:6443//g' )
+          export:
+          - TOKEN
+          - FINGERPRINT
+          - APISERVER
+          - clusterCACertificate
+          - APISERVERNOPORT
+          artifacts: [
+            ]
+          process: [
+            ]
