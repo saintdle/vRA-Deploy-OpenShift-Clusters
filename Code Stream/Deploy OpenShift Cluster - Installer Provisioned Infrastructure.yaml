@@ -275,7 +275,7 @@ stages:
           - '    namespace: kube-system'
           - EOF
           - ''
-          - kubectl apply -f svc-rbac.yaml
+          - kubectl apply -f svc-rbac.yaml --kubeconfig=auth/kubeconfig
           export: [
             ]
           artifacts: [
