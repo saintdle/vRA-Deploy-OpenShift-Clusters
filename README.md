@@ -15,4 +15,4 @@ vRA Code Stream Pipeline to deploy OpenShift clusters and register with Tanzu Mi
  * SSH Key for a bastion host access to your OpenShift nodes.
 
 # Getting started 
-> Blog Post - [Deploying OpenShift Clusters using vRA Code Stream](https://veducate.co.uk/deploying-openshift-clusters-ipi-using-vra-code-stream)
+> Blog Post - [Deploying OpenShift Clusters using vRA Code Stream](https://bit.ly/2SEG0Z5)
