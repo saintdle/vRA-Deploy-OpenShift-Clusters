@@ -4,6 +4,7 @@ kind: PIPELINE
 name: Deploy OpenShift Cluster - Installer Provisioned Infrastructure
 icon: organization,left, is-warning
 enabled: true
+description: Using this pipeline? See this blog post https://bit.ly/2SEG0Z5
 concurrency: 10
 input:
   Add_to_Cloud_Assembly: 'Yes'
@@ -75,7 +76,7 @@ _inputMeta:
 workspace:
   type: DOCKER
   endpoint: docker-host
-  image: saintdle/openshift-ci:0.2
+  image: saintdle/openshift-ci:latest
   registry: ''
   path: /workingDir
   autoCloneForTrigger: false
