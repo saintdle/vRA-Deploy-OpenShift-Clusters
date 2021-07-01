@@ -1,5 +1,5 @@
 ---
-project: <Change Me!>
+project: <Change me!>
 kind: PIPELINE
 name: Deploy OpenShift Cluster - Installer Provisioned Infrastructure
 icon: organization,left, is-warning
@@ -9,21 +9,26 @@ input:
   Add_to_Cloud_Assembly: 'Yes'
   Add_to_Code_Stream: 'Yes'
   Add_to_TMC: 'Yes'
-  base_domain: veducate.local
+  base_domain: simon.local
   Cluster_Name: ocp-vra
-  Compute_Plane_Node_count: '1'
+  Compute_Plane_Node_count: '2'
   Control_Plane_Node_count: '3'
   Openshift_apiVIP: 192.168.200.140
   Openshift_ingressVIP: 192.168.200.141
   Project: veducate-project
-  vCenter: vcenter.veducate.local
+  vCenter: vcenter.veducate.co.uk
   vCenter_cluster: Cluster
   vCenter_datacenter: Datacenter
   vCenter_datastore: Datastore
   vCenter_network: VM_NW1
+  vRA_Cloud_Proxy_Name: vRA-Cloud-Proxy-01
 _inputMeta:
   vCenter_network:
     description: Network for the OpenShift nodes to be deployed to
+    mandatory: true
+  vRA_Cloud_Proxy_Name:
+    description: Name of the vRA Cloud Proxy which will have network access to the OpenShift Cluster (Only
+      used if adding Kubernetes Endpoint to Cloud Assembly)
     mandatory: true
   Add_to_TMC:
     description: Add Cluster to Tanzu Mission Control = Yes or No
@@ -69,8 +74,8 @@ _inputMeta:
     mandatory: true
 workspace:
   type: DOCKER
-  endpoint: veducate-docker-host
-  image: saintdle/openshift-ci:latest
+  endpoint: docker-host
+  image: saintdle/openshift-ci:0.2
   registry: ''
   path: /workingDir
   autoCloneForTrigger: false
@@ -134,7 +139,7 @@ stages:
           - '    vsphere: '
           - '      cpus: 8'
           - '      coresPerSocket: 2'
-          - '      memoryMB: 8192'
+          - '      memoryMB: 16384'
           - '      osDisk:'
           - '        diskSizeGB: 120'
           - 'controlPlane: '
@@ -194,6 +199,7 @@ stages:
           steps:
           - ''
           - kubectl create -f "${Add OCP to TMC.Create TMC cluster attach task.output.responseBody.cluster.status.installerLink}"
+            --kubeconfig=auth/kubeconfig
           - ''
           - currentstatus=$(curl --location --request GET 'https://${var.ocp-tmc-url}/v1alpha1/clusters/${input.Cluster_Name}?full_name.managementClusterName=attached&full_name.provisionerName=attached'
             \
@@ -229,10 +235,12 @@ stages:
     taskOrder:
     - Create Cluster Service Account
     - Get OCP Cluster details,Get vRA Cloud API Token,Create Role Binding
-    - Create Code Stream Endpoint,Create Cloud Assembly K8s Endpoint
+    - Get vRA Cloud Proxy ID
+    - Create Cloud Assembly K8s Endpoint,Create Code Stream Endpoint
     tasks:
       Create Cloud Assembly K8s Endpoint:
         type: REST
+        ignoreFailure: true
         preCondition: ${input.Add_to_Cloud_Assembly} == "Yes"
         input:
           action: post
@@ -243,9 +251,13 @@ stages:
             Authorization: Bearer ${Add OCP Cluster to vRA.Get vRA Cloud API Token.output.responseBody.access_token}
           payload: |-
             {
+              "kubernetesWorkerInstances": -1,
+              "customProperties": {
+                "dcId": "${Add OCP Cluster to vRA.Get vRA Cloud Proxy ID.output.exports.PROXYID}"
+              },
               "name": "${input.Cluster_Name}",
               "description": "Cluster created from Pipeline",
-              "address": "${Add OCP Cluster to vRA.Get OCP Cluster details.output.exports.APISERVERNOPORT}",
+              "address": "${Add OCP Cluster to vRA.Get OCP Cluster details.output.exports.APISERVER}",
               "credentials": {
                 "privateKey": "${Add OCP Cluster to vRA.Get OCP Cluster details.output.exports.TOKEN}",
                 "type": "Bearer"
@@ -255,6 +267,25 @@ stages:
               "shared": "true",
               "global": "true"
             }
+      Get vRA Cloud Proxy ID:
+        type: CI
+        ignoreFailure: true
+        preCondition: ${input.Add_to_Cloud_Assembly} == "Yes"
+        input:
+          steps:
+          - curl --location --request GET 'https://api.mgmt.cloud.vmware.com/iaas/api/data-collectors'
+            \
+          - '--header ''Authorization: Bearer ${Add OCP Cluster to vRA.Get vRA Cloud API Token.output.responseBody.access_token}''
+            > proxyid.json'
+          - ''
+          - export PROXYID=$(cat proxyid.json | jq '.content[] | select(.name == "${input.vRA_Cloud_Proxy_Name}"
+            ) ."dcId"' -r)
+          export:
+          - PROXYID
+          artifacts: [
+            ]
+          process: [
+            ]
       Create Role Binding:
         type: CI
         preCondition: ${input.Add_to_Code_Stream} == "Yes" || ${input.Add_to_Cloud_Assembly} == "Yes"
@@ -355,9 +386,16 @@ stages:
             --kubeconfig=auth/kubeconfig)
           - export TOKEN=$(kubectl -n kube-system get secret $TOKENNAME -o jsonpath='{.data.token}' --kubeconfig=auth/kubeconfig
             | base64 -d)
-          - export clusterCACertificate=$(kubectl config view --minify --raw -o json --kubeconfig=auth/kubeconfig
-            | jq '.clusters[0].cluster["certificate-authority-data"]' | sed 's/"//g' )
           - export APISERVERNOPORT=$(echo $APISERVER | sed 's/:6443//g' )
+          - ''
+          - openssl s_client -showcerts -verify 5 -connect api.ocp-vra.simon.local:6443 < /dev/null |
+            awk '/BEGIN/,/END/{ if(/BEGIN/){a++}; out="cert"a".pem"; print >out}'; for cert in *.pem;
+            do newname=$(openssl x509 -noout -subject -in $cert | sed -nE 's/.*CN ?= ?(.*)/\1/; s/[ ,.*]/_/g;
+            s/__/_/g; s/_-_/-/; s/^_//g;p' | tr '[:upper:]' '[:lower:]').pem; echo "\${newname}"; mv "\${cert}"
+            "\${newname}"; done
+          - ls
+          - ''
+          - ' export clusterCACertificate=$( base64 kube-apiserver-lb-signer.pem | tr -d \\n)'
           export:
           - TOKEN
           - FINGERPRINT
